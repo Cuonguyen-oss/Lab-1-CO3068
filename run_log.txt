@@ -1,0 +1,16 @@
+Grid 4000 x 4000 (padded 4002 x 4002), 100 iterations, hardware threads: 4
+Loaded heat_matrix.csv in 2.38s
+Initial : center=20000000.0  max=20000000.0  mean=41564.2397
+Final   : center=19853595.1  max=19853595.1  mean=41564.2397
+
+Algorithm                     Threads     Time (s)    Speedup  Efficiency    MaxAbsErr
+Sequential                          1       5.5711       1.00      100.0%            0
+DUMMY collapse+static               1      13.8261       0.40       40.3%            0
+DUMMY collapse+static               2       7.7862       0.72       35.8%            0
+DUMMY collapse+static               4       3.8157       1.46       36.5%            0
+PRO persistent+simd                 1       4.3637       1.28      127.7%     3.35e-08
+PRO persistent+simd                 2       2.6140       2.13      106.6%     3.35e-08
+PRO persistent+simd                 4       2.5501       2.18       54.6%     3.35e-08
+
+Verification vs sequential: ALL PASSED
+Results written to results.csv
