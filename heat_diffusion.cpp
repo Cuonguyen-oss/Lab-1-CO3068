@@ -1,24 +1,4 @@
-// =============================================================================
-// Parallel Computing (CO3068) - Lab 1: Heat diffusion after a nuclear explosion
-//
-// Heat diffusion = repeated 2D convolution of a 4000 x 4000 heat matrix with
-//        | 0.05 0.10 0.05 |
-//    K = | 0.10 0.40 0.10 |      (sum = 1.0, symmetric => convolution == correlation)
-//        | 0.05 0.10 0.05 |
-//
-// Boundary: padding value 30 (baseline temperature) instead of 0.
-//
-// Implementations (3 levels, as required by the lecturer)
-//   1. SEQ   : plain triple loop, one thread (baseline)
-//   2. DUMMY : "dummy parallel" - parallel for + collapse(2) + static, fork/join
-//              every iteration, generic 3x3 loop. Parallel but NOT optimised.
-//   3. PRO   : "pro parallel" - ONE persistent parallel region, row-wise omp for,
-//              SIMD-friendly stencil (symmetric kernel => 3 multiplications
-//              instead of 9, restrict pointers, unit-stride loads).
-//
-// Every iteration reads buffer `cur` and writes buffer `nxt` (ping-pong),
-// so output cells are independent => no race condition, no atomic/critical.
-// =============================================================================
+
 #include <omp.h>
 
 #include <algorithm>
@@ -38,20 +18,16 @@
 #endif
 
 constexpr long N = N_SIZE;
-constexpr long W = N + 2;                 // padded width  (1-cell halo each side)
-constexpr long TOTAL = W * W;             // padded size
-constexpr double PAD_VALUE = 30.0;        // baseline temperature used for padding
+constexpr long W = N + 2;                
+constexpr long TOTAL = W * W;            
+constexpr double PAD_VALUE = 30.0;      
 
 constexpr double K[3][3] = {{0.05, 0.10, 0.05},
                             {0.10, 0.40, 0.10},
                             {0.05, 0.10, 0.05}};
 
-// Index of interior cell (i, j) in the padded array.
 static inline long P(long i, long j) { return (i + 1) * W + (j + 1); }
 
-// One output cell: weighted sum of its 3x3 neighbourhood.
-// Same function is used by ALL versions => identical arithmetic order =>
-// results must match the sequential version bit by bit.
 static inline double conv_cell(const double* __restrict in, long p) {
     double s = 0.0;
     for (int u = -1; u <= 1; ++u)
@@ -61,11 +37,6 @@ static inline double conv_cell(const double* __restrict in, long p) {
 }
 
 
-// Process cells (i, j0..j1-1) of one row. Kept as a separate function with
-// __restrict pointers so the compiler can prove in/out do not alias and
-// vectorise the j loop (used by the PRO version).
-// Uses the symmetry of K: corners 0.05, edges 0.10, centre 0.40.
-// (Mathematically identical to conv_cell; only the rounding order differs.)
 static void conv_span(const double* __restrict in, double* __restrict out, long i, long j0, long j1) {
     const double* __restrict up = in + P(i - 1, 0);
     const double* __restrict mid = in + P(i, 0);
@@ -77,9 +48,7 @@ static void conv_span(const double* __restrict in, double* __restrict out, long 
                0.05 * (up[j - 1] + up[j + 1] + dn[j - 1] + dn[j + 1]);
 }
 
-// ----------------------------------------------------------------------------
-// Memory helpers
-// ----------------------------------------------------------------------------
+
 static double* alloc_grid() {
     void* ptr = nullptr;
     if (posix_memalign(&ptr, 64, TOTAL * sizeof(double)) != 0) {
@@ -89,15 +58,13 @@ static double* alloc_grid() {
     return static_cast<double*>(ptr);
 }
 
-// Parallel copy = "first touch" so pages are placed near the threads that use them.
+
 static void copy_grid(double* dst, const double* src) {
 #pragma omp parallel for schedule(static)
     for (long r = 0; r < W; ++r) std::memcpy(dst + r * W, src + r * W, W * sizeof(double));
 }
 
-// ----------------------------------------------------------------------------
-// CSV loading (fast): whole file in memory, strtod, tolerate trailing commas
-// ----------------------------------------------------------------------------
+
 static bool load_csv(const std::string& path, double* grid) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
@@ -121,9 +88,7 @@ static bool load_csv(const std::string& path, double* grid) {
     return true;
 }
 
-// ----------------------------------------------------------------------------
-// SEQUENTIAL
-// ----------------------------------------------------------------------------
+
 static double* run_sequential(double* a, double* b, int iters) {
     double* cur = a;
     double* nxt = b;
@@ -132,14 +97,10 @@ static double* run_sequential(double* a, double* b, int iters) {
             for (long j = 0; j < N; ++j) nxt[P(i, j)] = conv_cell(cur, P(i, j));
         std::swap(cur, nxt);
     }
-    return cur;  // buffer that holds the final result
+    return cur; 
 }
 
-// ----------------------------------------------------------------------------
-// DUMMY PARALLEL : parallel for + collapse(2) + static schedule
-//   collapse(2) flattens the (i,j) space of N*N iterations, then it is split
-//   into equal contiguous chunks (cost of every cell is the same => static).
-// ----------------------------------------------------------------------------
+
 static double* run_par_a(double* a, double* b, int iters, int threads) {
     double* cur = a;
     double* nxt = b;
@@ -152,31 +113,22 @@ static double* run_par_a(double* a, double* b, int iters, int threads) {
     return cur;
 }
 
-// ----------------------------------------------------------------------------
-// PRO PARALLEL : persistent parallel region + row-wise "omp for" + simd stencil
-//   The team of threads is created ONCE (1 fork/join instead of `iters`).
-//   `omp for` ends with an implicit barrier, which is exactly the
-//   synchronisation needed between two iterations (all of `nxt` must be
-//   written before anybody reads it as `cur`). Pointer swap is thread-private,
-//   so there is no shared variable to protect.
-// ----------------------------------------------------------------------------
+
 static double* run_par_c(double* a, double* b, int iters, int threads) {
 #pragma omp parallel num_threads(threads) default(none) shared(a, b, iters)
     {
-        double* cur = a;  // thread-private pointers
+        double* cur = a;  
         double* nxt = b;
         for (int it = 0; it < iters; ++it) {
 #pragma omp for schedule(static)
-            for (long i = 0; i < N; ++i) conv_span(cur, nxt, i, 0, N);  // implicit barrier after loop
+            for (long i = 0; i < N; ++i) conv_span(cur, nxt, i, 0, N);  
             std::swap(cur, nxt);
         }
     }
     return (iters % 2 == 0) ? a : b;
 }
 
-// ----------------------------------------------------------------------------
-// Statistics with reduction (sum, max) + verification
-// ----------------------------------------------------------------------------
+
 struct Stats {
     double sum, max;
 };
@@ -201,7 +153,7 @@ static double max_abs_diff(const double* x, const double* y) {
     return d;
 }
 
-// Save every `step`-th cell (for heat-map picture in the report)
+
 static void dump_downsampled(const double* g, const std::string& path, long step) {
     std::ofstream f(path);
     for (long i = 0; i < N; i += step) {
@@ -210,9 +162,7 @@ static void dump_downsampled(const double* g, const std::string& path, long step
     }
 }
 
-// ----------------------------------------------------------------------------
-// Benchmark driver
-// ----------------------------------------------------------------------------
+
 using Runner = double* (*)(double*, double*, int, int);
 
 struct Algo {
@@ -273,7 +223,7 @@ int main(int argc, char** argv) {
     std::printf("Initial : center=%.1f  max=%.1f  mean=%.4f\n", init[P(N / 2, N / 2)], s0.max,
                 s0.sum / double(N * N));
 
-    // ---- Sequential baseline (best of `repeat`) ----
+ 
     double t_seq = 1e300;
     for (int r = 0; r < repeat; ++r) {
         copy_grid(A, init);
